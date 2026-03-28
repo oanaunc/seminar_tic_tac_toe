@@ -148,7 +148,7 @@ export function showWinLine(
   });
   winBeam = new THREE.Mesh(beamGeo, beamMat);
   winBeam.position.set(mid.x, 0.25, mid.z);
-  winBeam.rotation.y = -angle;
+  winBeam.rotation.y = angle;
   scene.add(winBeam);
 }
 

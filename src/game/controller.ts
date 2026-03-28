@@ -2,8 +2,7 @@
  * controller.ts – Game loop orchestrator.
  *
  * Ties together state, rules, rendering (mark placement/removal),
- * input handling, CPU opponent, and HUD updates. Manages turn
- * transitions, terminal states, and restart.
+ * input handling, CPU opponent, and HUD updates.
  */
 
 import * as THREE from "three";
@@ -19,7 +18,7 @@ import {
 import { isLegalMove, applyMove, getLegalMoves } from "./rules";
 import { cpuChooseMove, type Difficulty } from "./cpu";
 import { cellIndexToPosition } from "../board/boardMesh";
-import { createXMark, createOMark } from "../board/marks";
+import { createXMark, createOMark, X_COLOR, O_COLOR } from "../board/marks";
 import { getHoveredCell } from "../input/picker";
 import {
   setTurn,
@@ -30,6 +29,11 @@ import {
   addScoreX,
   addScoreO,
   addScoreDraw,
+  hideWinOverlay,
+  nextRound,
+  setPlayerOName,
+  updateMoveDots,
+  clearMoveDots,
 } from "../ui/hud";
 import {
   showHover,
@@ -39,9 +43,9 @@ import {
   showWinLine,
   clearWinLine,
   isAnimating,
+  spawnParticles,
 } from "../fx/feedback";
 
-// ── Dev mode toggle ─────────────────────────────────────────────────
 const DEV_MODE = false;
 
 function devLog(...args: unknown[]): void {
@@ -50,14 +54,11 @@ function devLog(...args: unknown[]): void {
 
 // ── Controller state ────────────────────────────────────────────────
 let state: GameState = createInitialState();
-
-/** Scene groups for placed marks (null = empty cell). */
 const markGroups: (THREE.Group | null)[] = Array(9).fill(null);
-
-/** CPU config. null = human vs human. */
 let cpuDifficulty: Difficulty | null = null;
 let cpuThinking = false;
 let inputLocked = false;
+let isFirstGame = true;
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -67,6 +68,16 @@ export function getState(): GameState {
 
 export function setCpuMode(diff: Difficulty | null): void {
   cpuDifficulty = diff;
+  if (diff === null) {
+    setPlayerOName("Player 2");
+  } else {
+    const labels: Record<Difficulty, string> = {
+      easy: "CPU Easy",
+      medium: "CPU Med",
+      hard: "CPU Hard",
+    };
+    setPlayerOName(labels[diff]);
+  }
   restart();
 }
 
@@ -74,11 +85,6 @@ export function getCpuMode(): Difficulty | null {
   return cpuDifficulty;
 }
 
-/**
- * Handle a cell click from the human player.
- * Validates the move, applies it, updates the scene, and triggers
- * CPU response if needed.
- */
 export function handleCellClick(index: number): void {
   if (inputLocked || cpuThinking) return;
   if (isAnimating()) return;
@@ -92,21 +98,25 @@ export function handleCellClick(index: number): void {
 
   placeMove(index);
 
-  // If game is still playing and CPU is active, schedule CPU turn
   if (state.status === "playing" && cpuDifficulty !== null) {
     scheduleCpuMove();
   }
 }
 
-/** Restart the game: clear board, reset state, update HUD. */
 export function restart(): void {
-  // Remove all marks from the scene
   for (let i = 0; i < 9; i++) {
     removeMark(i);
   }
   clearWinLine(markGroups);
   hideHover();
   clearStatus();
+  hideWinOverlay();
+  clearMoveDots();
+
+  if (!isFirstGame) {
+    nextRound();
+  }
+  isFirstGame = false;
 
   state = createInitialState();
   inputLocked = false;
@@ -116,10 +126,6 @@ export function restart(): void {
   devLog("Game restarted. State:", JSON.stringify(state));
 }
 
-/**
- * Per-frame update: manage hover highlight based on game status
- * and current hovered cell.
- */
 export function updateHover(): void {
   if (state.status !== "playing" || cpuThinking || inputLocked) {
     hideHover();
@@ -128,7 +134,7 @@ export function updateHover(): void {
 
   const idx = getHoveredCell();
   if (idx !== null && isLegalMove(state, idx)) {
-    showHover(idx);
+    showHover(idx, state.currentPlayer);
   } else {
     hideHover();
   }
@@ -140,20 +146,23 @@ function placeMove(index: number): void {
   const player = state.currentPlayer;
   state = applyMove(state, index);
 
-  // Create and place the 3D mark
-  const mark =
-    player === PLAYER_X ? createXMark() : createOMark();
+  const mark = player === PLAYER_X ? createXMark() : createOMark();
   const pos = cellIndexToPosition(index);
-  mark.position.set(pos.x, pos.y + 0.12, pos.z);
+  mark.position.set(pos.x, pos.y + 0.14, pos.z);
   scene.add(mark);
   markGroups[index] = mark;
   animateMarkIn(mark);
+
+  // Burst particles at placement position
+  const particleColor = player === PLAYER_X ? X_COLOR : O_COLOR;
+  spawnParticles(pos, particleColor, 10);
+
+  updateMoveDots(state.board);
 
   devLog(
     `Move: ${playerLabel(player)} → cell ${index} | Status: ${state.status} | Legal: ${getLegalMoves(state).length}`
   );
 
-  // Update HUD after move
   if (state.status === "playing") {
     setTurn(state.currentPlayer);
     clearStatus();
@@ -168,17 +177,25 @@ function handleTerminal(): void {
   if (state.status === "x_wins") {
     setWinner(PLAYER_X);
     addScoreX();
-    setStatusMessage("Press R or click Restart to play again");
-    if (state.winningLine) showWinLine(state.winningLine, markGroups);
+    if (state.winningLine) {
+      showWinLine(state.winningLine, markGroups);
+      // Extra particles on winning cells
+      for (const idx of state.winningLine) {
+        spawnParticles(cellIndexToPosition(idx), 0xffd93d, 6);
+      }
+    }
   } else if (state.status === "o_wins") {
     setWinner(PLAYER_O);
     addScoreO();
-    setStatusMessage("Press R or click Restart to play again");
-    if (state.winningLine) showWinLine(state.winningLine, markGroups);
+    if (state.winningLine) {
+      showWinLine(state.winningLine, markGroups);
+      for (const idx of state.winningLine) {
+        spawnParticles(cellIndexToPosition(idx), 0xffd93d, 6);
+      }
+    }
   } else if (state.status === "draw") {
     setDraw();
     addScoreDraw();
-    setStatusMessage("Press R or click Restart to play again");
   }
 
   devLog("Terminal state:", state.status);

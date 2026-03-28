@@ -13,10 +13,16 @@ import {
   updateHover,
   restart,
   setCpuMode,
-  getCpuMode,
 } from "./game/controller";
 import { setTurn } from "./ui/hud";
-import { updateAnimations } from "./fx/feedback";
+import {
+  updateAnimations,
+  updateHoverOpacity,
+  updateFlash,
+  updateParticles,
+  updateMotes,
+  createAmbientMotes,
+} from "./fx/feedback";
 import { PLAYER_X } from "./game/state";
 import type { Difficulty } from "./game/cpu";
 import * as THREE from "three";
@@ -24,6 +30,8 @@ import * as THREE from "three";
 // ── Scene setup ─────────────────────────────────────────────────────
 const { group: boardGroup, cellMeshes } = createBoard();
 scene.add(boardGroup);
+
+createAmbientMotes();
 
 // ── Input ───────────────────────────────────────────────────────────
 initPicker(cellMeshes);
@@ -91,7 +99,13 @@ function animate(): void {
   requestAnimationFrame(animate);
 
   const dt = clock.getDelta();
+  const elapsed = clock.elapsedTime;
+
   updateAnimations(dt);
+  updateHoverOpacity(dt);
+  updateFlash(dt);
+  updateParticles(dt);
+  updateMotes(elapsed);
   updateHover();
 
   renderer.render(scene, camera);
